@@ -2,7 +2,7 @@
 
 > Point your index finger to grow a vibrant, blooming botanical garden in real-time. Open your palm to shatter them into a glowing physics explosion of sparkles and stardust.
 
-Created by **Rajarshi Chakraborty**
+Created by **Rajarshi Chakraborty** · Inspired by [@jessica.shen36](https://instagram.com/jessica.shen36)
 
 ---
 
