@@ -21,7 +21,7 @@
       ]
     },
     {
-      "source": "/(style.css|app.js|sw.js|og-preview.png|flowers/(.*))",
+      "source": "/flowers/:path*",
       "headers": [
         {
           "key": "Cache-Control",
