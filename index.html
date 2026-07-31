@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  
+  <!-- Primary Meta Tags -->
+  <title>Floral Aura — Interactive Hand Tracking AR Experience</title>
+  <meta name="title" content="Floral Aura — Interactive Hand Tracking AR Experience">
+  <meta name="description" content="Point your index finger to grow a blooming floral garden in real-time. Open your hand to shatter them with glowing sparkle effects. Powered by AI hand tracking.">
+  <meta name="keywords" content="hand tracking, floral aura, mediapipe hands, web ar, interactive art, gesture control, augmented reality web">
+  <meta name="author" content="Rajarshi Chakraborty">
+  <meta name="theme-color" content="#111111">
+  <link rel="canonical" href="https://flower-wand-garden.vercel.app/">
+
+  <!-- Open Graph / Facebook Link Preview Image -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://flower-wand-garden.vercel.app/">
+  <meta property="og:title" content="Floral Aura — Interactive Hand Tracking AR Experience">
+  <meta property="og:description" content="Point your index finger to grow a blooming floral garden in real-time. Open your hand to shatter them. An elegant web AR experience.">
+  <meta property="og:image" content="https://flower-wand-garden.vercel.app/og-preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Floral Aura Interactive Web AR Hand Tracking Experience Preview">
+  <meta property="og:site_name" content="Floral Aura">
+
+  <!-- Twitter Card Link Preview Image -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://flower-wand-garden.vercel.app/">
+  <meta name="twitter:title" content="Floral Aura — Interactive Hand Tracking AR Experience">
+  <meta name="twitter:description" content="Point your index finger to grow a blooming floral garden in real-time. Open your hand to shatter them. An elegant web AR experience.">
+  <meta name="twitter:image" content="https://flower-wand-garden.vercel.app/og-preview.png">
+  <meta name="twitter:image:alt" content="Floral Aura Interactive Web AR Hand Tracking Experience Preview">
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Floral Aura",
+    "url": "https://flower-wand-garden.vercel.app/",
+    "description": "An interactive web AR app that tracks your hands in real-time. Point to grow a blooming garden, open your hand to shatter it.",
+    "applicationCategory": "MultimediaApplication",
+    "operatingSystem": "All (Web Browser)",
+    "browserRequirements": "Requires Webcam & HTML5/WebGL support",
+    "image": "https://flower-wand-garden.vercel.app/og-preview.png"
+  }
+  </script>
+
+  <!-- Speculative Pre-fetching & Preconnect for Fast MediaPipe CDN asset downloading -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Landing Screen -->
+  <section id="landing-screen" aria-label="Welcome screen">
+    <div class="landing-content">
+      <header>
+        <h1>Floral Aura</h1>
+      </header>
+      <p class="landing-desc">
+        Point your index finger to grow flowers. Open<br>your hand to shatter them.
+      </p>
+      
+      <button id="start-btn" aria-live="polite" aria-label="Turn on camera and start hand tracking">Turn on camera</button>
+      
+      <!-- Interactive Model Download & Progress Bar -->
+      <div id="progress-container" class="hidden">
+        <div class="progress-bar-track">
+          <div id="progress-fill"></div>
+        </div>
+        <p id="progress-status">Downloading AI Hand Model (First time load)... 0%</p>
+      </div>
+    </div>
+    <footer class="landing-footer">
+      <p>Created by Rajarshi Chakraborty</p>
+    </footer>
+  </section>
+
+  <!-- Main AR App -->
+  <main id="app" class="hidden" aria-label="Flower Wand Hand Tracking App">
+    <video id="video" autoplay playsinline plotsinline muted></video>
+    <canvas id="overlay-canvas"></canvas>
+    
+    <!-- Floating Instruction Pill -->
+    <div id="instruction-bar" role="status" aria-live="polite">
+      <span class="pulse-dot" aria-hidden="true"></span>
+      <span id="instruction-text">Show your hands</span>
+    </div>
+
+    <!-- Creator Credit -->
+    <footer class="app-credit">
+      <p>Created by Rajarshi Chakraborty</p>
+    </footer>
+  </main>
+
+  <!-- External MediaPipe Libraries & Application Logic -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js" crossorigin="anonymous"></script>
+  <script src="app.js"></script>
+</body>
+</html>

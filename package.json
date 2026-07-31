@@ -1,0 +1,6 @@
+{
+  "name": "flower-wand-hand-tracker",
+  "version": "1.0.0",
+  "description": "Hand tracking flower wand — point to plant flowers, open hand to scatter",
+  "private": true
+}
