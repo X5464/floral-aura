@@ -92,12 +92,12 @@
   <!-- Retake Background Button (Cloak mode only) -->
   <button id="retake-btn" class="hidden" aria-label="Retake background snapshot">📷 Retake Background</button>
 
-  <!-- Cloak Hint Overlay (shown once on first switch to Cloak) -->
+  <!-- Cloak Snapshot Countdown & Guide Overlay -->
   <div id="cloak-hint" class="hidden" role="alert" aria-live="assertive">
     <div class="cloak-hint-content">
-      <p class="cloak-hint-emoji">🫥</p>
-      <p class="cloak-hint-title">Step out of frame!</p>
-      <p class="cloak-hint-desc">The app will snapshot your empty room.<br>Then come back and frame your hands to go invisible.</p>
+      <p id="cloak-hint-emoji" class="cloak-hint-emoji">🫥</p>
+      <h2 id="cloak-hint-title" class="cloak-hint-title">Step Out of Frame!</h2>
+      <p id="cloak-hint-desc" class="cloak-hint-desc">Move away from the camera so it can snapshot your empty room.<br>Capturing in <strong id="countdown-num">3</strong>s...</p>
     </div>
   </div>
 

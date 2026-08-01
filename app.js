@@ -318,6 +318,48 @@ modeSwitcherBtns.forEach(btn => {
   });
 });
 
+let isCountingDown = false;
+
+function triggerBackgroundSnapshotCountdown() {
+  if (isCountingDown) return;
+  isCountingDown = true;
+
+  const hintTitle = document.getElementById('cloak-hint-title');
+  const hintDesc = document.getElementById('cloak-hint-desc');
+  const hintEmoji = document.getElementById('cloak-hint-emoji');
+
+  cloakHintEl.classList.remove('hidden', 'fade-out');
+
+  let count = 3;
+  if (hintEmoji) hintEmoji.textContent = '🚶‍♂️';
+  if (hintTitle) hintTitle.textContent = 'Step Out of Frame!';
+  if (hintDesc) hintDesc.innerHTML = `Move away from the camera for an empty room photo.<br>Capturing in <strong id="countdown-num" style="color:#50ffc8;font-size:1.3rem;">${count}</strong>s...`;
+
+  const timer = setInterval(() => {
+    count--;
+    if (count > 0) {
+      if (hintDesc) hintDesc.innerHTML = `Move away from the camera for an empty room photo.<br>Capturing in <strong id="countdown-num" style="color:#50ffc8;font-size:1.3rem;">${count}</strong>s...`;
+    } else {
+      clearInterval(timer);
+      // Capture fresh background snapshot
+      captureBackground();
+
+      if (hintEmoji) hintEmoji.textContent = '📸✨';
+      if (hintTitle) hintTitle.textContent = 'Snapshot Saved!';
+      if (hintDesc) hintDesc.innerHTML = `Step back in and frame your hands to go invisible! 🫥`;
+
+      setTimeout(() => {
+        cloakHintEl.classList.add('fade-out');
+        setTimeout(() => {
+          cloakHintEl.classList.add('hidden');
+          cloakHintEl.classList.remove('fade-out');
+          isCountingDown = false;
+        }, 500);
+      }, 1400);
+    }
+  }, 1000);
+}
+
 function switchMode(mode) {
   currentMode = mode;
 
@@ -332,23 +374,9 @@ function switchMode(mode) {
     // Show retake button
     retakeBtn.classList.remove('hidden');
 
-    // Show hint overlay on first switch to cloak
-    if (!cloakHintShown) {
-      cloakHintShown = true;
-      cloakHintEl.classList.remove('hidden');
-      // Auto-dismiss hint after 4 seconds
-      setTimeout(() => {
-        cloakHintEl.classList.add('fade-out');
-        setTimeout(() => {
-          cloakHintEl.classList.add('hidden');
-          cloakHintEl.classList.remove('fade-out');
-        }, 600);
-      }, 4000);
-    }
-
-    // Auto-capture background if we don't have one yet
-    if (!hasBackground && videoReady) {
-      captureBackground();
+    // Trigger 3-second countdown if background not captured or on first switch
+    if (!hasBackground) {
+      triggerBackgroundSnapshotCountdown();
     }
   } else {
     // Switch back to flowers — hide cloak UI
@@ -362,10 +390,7 @@ function switchMode(mode) {
 
 // Retake background button
 retakeBtn.addEventListener('click', () => {
-  captureBackground();
-  // Brief visual feedback
-  retakeBtn.textContent = '✅ Captured!';
-  setTimeout(() => { retakeBtn.textContent = '📷 Retake Background'; }, 1200);
+  triggerBackgroundSnapshotCountdown();
 });
 
 // ===== CAMERA START =====
