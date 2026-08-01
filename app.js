@@ -1210,17 +1210,18 @@ function animLoopCloak(w, h) {
   if (cloakOpacity < 0.01) cloakOpacity = 0;
   if (cloakOpacity > 1) cloakOpacity = 1;
 
-  // --- Phase 3: Draw hand skeletons (always, for visual feedback) ---
+  // --- Phase 3: Render the cloak snapshot FIRST ---
+  if (polygon && cloakOpacity > 0.01) {
+    renderCloakPolygon(polygon, w, h, cloakOpacity);
+  }
+
+  // --- Phase 4: Draw vibrant hand exoskeletons ON TOP of the cloak ---
   if (landmarks && landmarks.length > 0) {
     for (let hi = 0; hi < landmarks.length; hi++) {
       const pts = landmarks[hi].map(l => lmToScreen(l, w, h));
-      drawCloakHandOutlines(pts);
+      const colors = HAND_COLORS[hi % 2];
+      drawExoskeleton(pts, colors);
     }
-  }
-
-  // --- Phase 4: Render the cloak ---
-  if (polygon && cloakOpacity > 0.01) {
-    renderCloakPolygon(polygon, w, h, cloakOpacity);
   }
 
   // --- Phase 5: Update instruction text ---
