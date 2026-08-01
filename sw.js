@@ -1,4 +1,4 @@
-const CACHE_NAME = 'flower-wand-v21';
+const CACHE_NAME = 'flower-wand-v22';
 const REAL_FLOWER_PATHS = Array.from({ length: 15 }, (_, i) => `/flowers/pink_${i}.png`)
   .concat(Array.from({ length: 15 }, (_, i) => `/flowers/vibrant_${i}.png`));
 
