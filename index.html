@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   
   <!-- Primary Meta Tags -->
-  <title>Floral Aura — Interactive Hand Tracking AR Experience</title>
-  <meta name="title" content="Floral Aura — Interactive Hand Tracking AR Experience">
-  <meta name="description" content="Point your index finger to grow a blooming floral garden in real-time. Open your hand to shatter them with glowing sparkle effects. Powered by AI hand tracking.">
-  <meta name="keywords" content="hand tracking, floral aura, mediapipe hands, web ar, interactive art, gesture control, augmented reality web">
+  <title>Floral Aura & Invisibility Cloak — Web AR Experience</title>
+  <meta name="title" content="Floral Aura & Invisibility Cloak — Web AR Experience">
+  <meta name="description" content="Point your finger to bloom a floral garden or frame your hands to activate the Harry Potter Invisibility Cloak. Ultra-responsive 60 FPS AI hand tracking.">
+  <meta name="keywords" content="hand tracking, floral aura, invisibility cloak, mediapipe hands, web ar, harry potter cloak, interactive art, gesture control">
   <meta name="author" content="Rajarshi Chakraborty">
   <meta name="theme-color" content="#111111">
   <link rel="canonical" href="https://flower-wand-garden.vercel.app/">
@@ -16,30 +16,30 @@
   <!-- Open Graph / Facebook Link Preview Image -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://flower-wand-garden.vercel.app/">
-  <meta property="og:title" content="Floral Aura — Interactive Hand Tracking AR Experience">
-  <meta property="og:description" content="Point your index finger to grow a blooming floral garden in real-time. Open your hand to shatter them. An elegant web AR experience.">
+  <meta property="og:title" content="Floral Aura & Invisibility Cloak — Web AR Experience">
+  <meta property="og:description" content="Point your finger to bloom a floral garden or frame your hands to activate the Harry Potter Invisibility Cloak. Powered by 60 FPS AI hand tracking.">
   <meta property="og:image" content="https://flower-wand-garden.vercel.app/og-preview.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Floral Aura Interactive Web AR Hand Tracking Experience Preview">
+  <meta property="og:image:alt" content="Floral Aura & Invisibility Cloak AR Experience Preview">
   <meta property="og:site_name" content="Floral Aura">
 
   <!-- Twitter Card Link Preview Image -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://flower-wand-garden.vercel.app/">
-  <meta name="twitter:title" content="Floral Aura — Interactive Hand Tracking AR Experience">
-  <meta name="twitter:description" content="Point your index finger to grow a blooming floral garden in real-time. Open your hand to shatter them. An elegant web AR experience.">
+  <meta name="twitter:title" content="Floral Aura & Invisibility Cloak — Web AR Experience">
+  <meta name="twitter:description" content="Point your finger to bloom a floral garden or frame your hands to activate the Harry Potter Invisibility Cloak. Powered by 60 FPS AI hand tracking.">
   <meta name="twitter:image" content="https://flower-wand-garden.vercel.app/og-preview.png">
-  <meta name="twitter:image:alt" content="Floral Aura Interactive Web AR Hand Tracking Experience Preview">
+  <meta name="twitter:image:alt" content="Floral Aura & Invisibility Cloak AR Experience Preview">
 
   <!-- JSON-LD Structured Data -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "WebApplication",
-    "name": "Floral Aura",
+    "name": "Floral Aura & Invisibility Cloak",
     "url": "https://flower-wand-garden.vercel.app/",
-    "description": "An interactive web AR app that tracks your hands in real-time. Point to grow a blooming garden, open your hand to shatter it.",
+    "description": "An interactive web AR app that tracks your hands in real-time. Bloom a floral garden or frame your hands to activate the Harry Potter Invisibility Cloak.",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "All (Web Browser)",
     "browserRequirements": "Requires Webcam & HTML5/WebGL support",
@@ -64,7 +64,8 @@
         <h1>Floral Aura</h1>
       </header>
       <p class="landing-desc">
-        Point your index finger to grow flowers. Open<br>your hand to shatter them.
+        Point your finger to bloom a floral garden.<br>
+        Open your palm to shatter. Frame hands for the Invisibility Cloak.
       </p>
       
       <button id="start-btn" aria-live="polite" aria-label="Turn on camera and start hand tracking">Turn on camera</button>
@@ -82,11 +83,29 @@
     </footer>
   </section>
 
+  <!-- Mode Switcher Toggle (Flowers / Cloak) — always on screen once camera starts -->
+  <div id="mode-switcher" aria-label="Switch effect mode">
+    <button id="mode-flowers" class="mode-btn active" data-mode="flowers" aria-pressed="true">🌸 Flowers</button>
+    <button id="mode-cloak" class="mode-btn" data-mode="cloak" aria-pressed="false">🫥 Cloak</button>
+  </div>
+
+  <!-- Retake Background Button (Cloak mode only) -->
+  <button id="retake-btn" class="hidden" aria-label="Retake background snapshot">📷 Retake Background</button>
+
+  <!-- Cloak Hint Overlay (shown once on first switch to Cloak) -->
+  <div id="cloak-hint" class="hidden" role="alert" aria-live="assertive">
+    <div class="cloak-hint-content">
+      <p class="cloak-hint-emoji">🫥</p>
+      <p class="cloak-hint-title">Step out of frame!</p>
+      <p class="cloak-hint-desc">The app will snapshot your empty room.<br>Then come back and frame your hands to go invisible.</p>
+    </div>
+  </div>
+
   <!-- Main AR App -->
   <main id="app" class="hidden" aria-label="Floral Aura Hand Tracking App">
     <video id="video" autoplay playsinline plotsinline muted></video>
     <canvas id="overlay-canvas"></canvas>
-    
+
     <!-- Floating Instruction Pill -->
     <div id="instruction-bar" role="status" aria-live="polite">
       <span class="pulse-dot" aria-hidden="true"></span>

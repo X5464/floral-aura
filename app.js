@@ -132,7 +132,94 @@ let petals = [];
 let lastPetalTime = 0;
 let plantCooldowns = [0, 0];
 let isScattering = false;
+let handWasPresent = false;
 let currentLandmarks = []; // Store latest detected hand landmarks
+
+// ===== CLOAK MODE STATE =====
+let currentMode = 'flowers';        // 'flowers' or 'cloak'
+let backgroundCanvas = null;         // Offscreen canvas for stored background snapshot
+let backgroundCtx = null;
+let hasBackground = false;           // Whether we've captured a background snapshot
+let cloakHintShown = false;          // Whether the cloak hint has been shown once
+const SMOOTH_FRAMES = 8;             // Frames for landmark EMA smoothing (higher = smoother, more lag)
+const smoothBuffers = {};            // Per-hand, per-landmark EMA buffers
+const FEATHER_BLUR = 12;             // Gaussian blur px for polygon edge feathering
+
+// --- Tracking Persistence (prevents cloak from vanishing on brief tracking drops) ---
+let lastValidPolygon = null;         // Last successfully computed 4-corner polygon
+let framesSinceLastPolygon = 999;    // How many frames since we had a valid polygon
+const PERSIST_FRAMES = 20;           // Hold last polygon for this many frames (~333ms at 60fps)
+let cloakOpacity = 0;                // Current cloak opacity (animated)
+let targetCloakOpacity = 0;          // Target opacity (1 when tracking, fades when lost)
+let lastTwoHandWrists = null;        // Last known wrist positions when both hands were visible
+
+// ======================================================================
+// ONE-EURO FILTER (VR/AR Headset Motion Smoothing — Meta Quest / Apple Vision Pro)
+// ======================================================================
+class LowPassFilter {
+  constructor(alpha = 1.0) {
+    this.setAlpha(alpha);
+    this.y = null;
+  }
+  setAlpha(alpha) {
+    this.alpha = Math.max(0.0, Math.min(1.0, alpha));
+  }
+  filter(x) {
+    if (this.y === null) {
+      this.y = x;
+    } else {
+      this.y = this.alpha * x + (1.0 - this.alpha) * this.y;
+    }
+    return this.y;
+  }
+}
+
+class OneEuroFilter {
+  constructor(minCutoff = 1.2, beta = 0.015, dCutoff = 1.0) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this.xFilter = new LowPassFilter();
+    this.dxFilter = new LowPassFilter();
+    this.lastTime = null;
+  }
+  alpha(cutoff, dt) {
+    const tau = 1.0 / (2.0 * Math.PI * cutoff);
+    return 1.0 / (1.0 + tau / dt);
+  }
+  filter(x, timestamp = Date.now()) {
+    if (this.lastTime === null) {
+      this.lastTime = timestamp;
+      return this.xFilter.filter(x);
+    }
+    const dt = Math.max(0.001, (timestamp - this.lastTime) / 1000.0);
+    this.lastTime = timestamp;
+
+    const prevY = this.xFilter.y !== null ? this.xFilter.y : x;
+    const dx = (x - prevY) / dt;
+    this.dxFilter.setAlpha(this.alpha(this.dCutoff, dt));
+    const edx = this.dxFilter.filter(dx);
+    const cutoff = this.minCutoff + this.beta * Math.abs(edx);
+
+    this.xFilter.setAlpha(this.alpha(cutoff, dt));
+    return this.xFilter.filter(x);
+  }
+}
+
+// Per-landmark One-Euro Filters
+const oneEuroFilters = {};
+function getOneEuroFilteredPt(key, x, y) {
+  const kx = `${key}_x`;
+  const ky = `${key}_y`;
+  if (!oneEuroFilters[kx]) oneEuroFilters[kx] = new OneEuroFilter();
+  if (!oneEuroFilters[ky]) oneEuroFilters[ky] = new OneEuroFilter();
+  return {
+    x: oneEuroFilters[kx].filter(x),
+    y: oneEuroFilters[ky].filter(y)
+  };
+}
+
+
 
 // DOM Elements
 const landingScreen = document.getElementById('landing-screen');
@@ -143,12 +230,19 @@ const ctx = canvas.getContext('2d');
 const instructionText = document.getElementById('instruction-text');
 const startBtn = document.getElementById('start-btn');
 
+// Cloak Mode DOM Elements
+const modeSwitcherBtns = document.querySelectorAll('.mode-btn');
+const retakeBtn = document.getElementById('retake-btn');
+const cloakHintEl = document.getElementById('cloak-hint');
+
 let hands, camera, videoReady = false, isProcessingFrame = false;
 
 // ===== RESPONSIVE CANVAS RESIZING =====
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  canvas.style.width = `${window.innerWidth}px`;
+  canvas.style.height = `${window.innerHeight}px`;
 }
 window.addEventListener('resize', resizeCanvas);
 window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200));
@@ -172,9 +266,9 @@ function lmToScreen(lm, sw, sh) {
     offsetY = 0;
   }
 
-  let sx = lm.x * vw * displayScale + offsetX;
+  // Mirror horizontally BEFORE applying video scale & offset to match CSS transform: scaleX(-1)
+  let sx = (1 - lm.x) * vw * displayScale + offsetX;
   let sy = lm.y * vh * displayScale + offsetY;
-  sx = sw - sx; // Mirror horizontally to match CSS scaleX(-1)
 
   return { x: sx, y: sy };
 }
@@ -190,9 +284,9 @@ function ensureMediaPipe() {
 
       hands.setOptions({
         maxNumHands: 2,
-        modelComplexity: 0,           // 0 = lite model (fastest)
+        modelComplexity: 0,           // 0 = Lite model (ultra-fast 60 FPS real-time responsiveness)
         minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.3
+        minTrackingConfidence: 0.4
       });
 
       hands.onResults(onResults);
@@ -214,6 +308,65 @@ function ensureMediaPipe() {
   startBtn.disabled = false;
   startBtn.classList.add('ready');
 })();
+
+// ===== MODE SWITCHING =====
+modeSwitcherBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const newMode = btn.dataset.mode;
+    if (newMode === currentMode) return;
+    switchMode(newMode);
+  });
+});
+
+function switchMode(mode) {
+  currentMode = mode;
+
+  // Update toggle button UI
+  modeSwitcherBtns.forEach(btn => {
+    const isActive = btn.dataset.mode === mode;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+
+  if (mode === 'cloak') {
+    // Show retake button
+    retakeBtn.classList.remove('hidden');
+
+    // Show hint overlay on first switch to cloak
+    if (!cloakHintShown) {
+      cloakHintShown = true;
+      cloakHintEl.classList.remove('hidden');
+      // Auto-dismiss hint after 4 seconds
+      setTimeout(() => {
+        cloakHintEl.classList.add('fade-out');
+        setTimeout(() => {
+          cloakHintEl.classList.add('hidden');
+          cloakHintEl.classList.remove('fade-out');
+        }, 600);
+      }, 4000);
+    }
+
+    // Auto-capture background if we don't have one yet
+    if (!hasBackground && videoReady) {
+      captureBackground();
+    }
+  } else {
+    // Switch back to flowers — hide cloak UI
+    retakeBtn.classList.add('hidden');
+    // Dismiss cloak hint if still visible
+    if (!cloakHintEl.classList.contains('hidden')) {
+      cloakHintEl.classList.add('hidden');
+    }
+  }
+}
+
+// Retake background button
+retakeBtn.addEventListener('click', () => {
+  captureBackground();
+  // Brief visual feedback
+  retakeBtn.textContent = '✅ Captured!';
+  setTimeout(() => { retakeBtn.textContent = '📷 Retake Background'; }, 1200);
+});
 
 // ===== CAMERA START =====
 startBtn.addEventListener('click', () => {
@@ -281,6 +434,13 @@ function startCamera() {
     });
   }
 
+  // Auto-capture background snapshot after a short delay to let camera stabilize
+  setTimeout(() => {
+    if (!hasBackground) {
+      captureBackground();
+    }
+  }, 1500);
+
   // Start continuous 60 FPS animation loop
   requestAnimationFrame(animLoop);
 }
@@ -312,6 +472,14 @@ function animLoop() {
   // Clear canvas every frame
   ctx.clearRect(0, 0, w, h);
 
+  // ── CLOAK MODE BRANCH ──
+  if (currentMode === 'cloak') {
+    animLoopCloak(w, h);
+    requestAnimationFrame(animLoop);
+    return;
+  }
+
+  // ── FLOWER MODE (original, unchanged) ──
   let anyPointing = false;
   let anyOpen = false;
 
@@ -322,7 +490,7 @@ function animLoop() {
       const colors = HAND_COLORS[hi % 2];
 
       drawExoskeleton(pts, colors);
-      const g = detectGesture(lm);
+      const g = detectGesture(lm, hi);
 
       if (g === 'pointing') {
         plantFlower(pts[INDEX_TIP].x, pts[INDEX_TIP].y, hi);
@@ -337,6 +505,7 @@ function animLoop() {
     else if (anyOpen) instructionText.textContent = 'Shattering flowers! ✨🖐️';
     else instructionText.textContent = 'Point to plant · Open hand to shatter ✨';
   } else {
+    handWasPresent = false;
     instructionText.textContent = 'Show your hands';
   }
 
@@ -352,44 +521,64 @@ let lastTipPos = [{ x: null, y: null }, { x: null, y: null }];
 
 // ===== GESTURE DETECTION (3D Orientation-Invariant + Edge Protection) =====
 let openHandFrameCount = 0;
+let prevWristPos = [{ x: null, y: null }, { x: null, y: null }];
 
-function detectGesture(lm) {
+/**
+ * Check if the PALM / FRONT pad side of the hand is facing the camera.
+ * Returns false when the BACK (nail side) of the hand faces the camera.
+ */
+function isPalmFacingCamera(lm) {
+  if (!lm || lm.length < 18 || !lm[0] || !lm[5] || !lm[17]) return true;
+  try {
+    // Vector 1: Wrist (0) to Index MCP (5)
+    const v1x = lm[5].x - lm[0].x;
+    const v1y = lm[5].y - lm[0].y;
+
+    // Vector 2: Wrist (0) to Pinky MCP (17)
+    const v2x = lm[17].x - lm[0].x;
+    const v2y = lm[17].y - lm[0].y;
+
+    // 2D Cross product Z component (indicates orientation in mirrored view)
+    const nz = v1x * v2y - v1y * v2x;
+
+    const indexRightOfPinky = lm[5].x > lm[17].x;
+    return indexRightOfPinky ? (nz > 0.001) : (nz < -0.001);
+  } catch (e) {
+    return true; // Fail-safe default
+  }
+}
+
+function detectGesture(lm, hi = 0) {
+  if (!lm || lm.length < 21) return 'neutral';
+
   const indexRatio  = getFingerExtensionRatio(lm, 8, 5);
   const middleRatio = getFingerExtensionRatio(lm, 12, 9);
   const ringRatio   = getFingerExtensionRatio(lm, 16, 13);
   const pinkyRatio  = getFingerExtensionRatio(lm, 20, 17);
   const thumbRatio  = getFingerExtensionRatio(lm, 4, 2);
 
-  // POINTING: Index finger is extended noticeably more than middle, ring, & pinky fingers
-  // Relative ratio diff (indexRatio - otherRatios > 0.12) is 100% invariant to corner lens distortion
-  const isIndexPointing = (indexRatio > 1.18) &&
-                          (indexRatio - middleRatio > 0.12) &&
-                          (indexRatio - ringRatio > 0.12) &&
-                          (indexRatio - pinkyRatio > 0.12);
+  // POINTING: Index finger extended noticeably more than middle, ring, pinky
+  const isIndexPointing = (indexRatio > 1.15) &&
+                          (indexRatio - middleRatio > 0.10) &&
+                          (indexRatio - ringRatio > 0.10) &&
+                          (indexRatio - pinkyRatio > 0.10);
 
   if (isIndexPointing) {
     openHandFrameCount = 0;
     return 'pointing';
   }
 
-  // OPEN PALM SHATTER: All 5 fingers fully extended (index, middle, ring, pinky, thumb)
-  const indexExt  = indexRatio > 1.3;
-  const middleExt = middleRatio > 1.3;
-  const ringExt   = ringRatio > 1.3;
-  const pinkyExt  = pinkyRatio > 1.3;
-  const thumbExt  = thumbRatio > 1.2;
+  // OPEN PALM SHATTER: All 5 fingers extended (index, middle, ring, pinky, thumb)
+  const indexExt  = indexRatio > 1.20;
+  const middleExt = middleRatio > 1.20;
+  const ringExt   = ringRatio > 1.20;
+  const pinkyExt  = pinkyRatio > 1.20;
+  const thumbExt  = thumbRatio > 1.10;
+  const notPointing = (indexRatio - middleRatio < 0.16);
 
-  let isCutOffAtEdge = false;
-  for (let i = 0; i < lm.length; i++) {
-    if (lm[i].x < 0.02 || lm[i].x > 0.98 || lm[i].y < 0.02 || lm[i].y > 0.98) {
-      isCutOffAtEdge = true;
-      break;
-    }
-  }
-
-  if (!isCutOffAtEdge && indexExt && middleExt && ringExt && pinkyExt && thumbExt) {
+  if (indexExt && middleExt && ringExt && pinkyExt && thumbExt && notPointing) {
     openHandFrameCount++;
-    if (openHandFrameCount >= 3) {
+    if (openHandFrameCount >= 3) { // ~50ms sustained 5-finger open palm
       return 'open';
     }
   } else {
@@ -400,47 +589,76 @@ function detectGesture(lm) {
 }
 
 function getFingerExtensionRatio(lm, tipIdx, mcpIdx) {
-  const wrist = lm[0];
-  const tip   = lm[tipIdx];
-  const mcp   = lm[mcpIdx];
+  if (!lm || !lm[tipIdx] || !lm[mcpIdx] || !lm[0]) return 0;
+  try {
+    const wrist = lm[0];
+    const tip   = lm[tipIdx];
+    const mcp   = lm[mcpIdx];
 
-  const distWristTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y, tip.z - wrist.z);
-  const distWristMcp = Math.hypot(mcp.x - wrist.x, mcp.y - wrist.y, mcp.z - wrist.z);
+    const distWristTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y, tip.z - wrist.z);
+    const distWristMcp = Math.hypot(mcp.x - wrist.x, mcp.y - wrist.y, mcp.z - wrist.z);
 
-  return distWristMcp > 0 ? distWristTip / distWristMcp : 0;
+    return distWristMcp > 0 ? distWristTip / distWristMcp : 0;
+  } catch (e) {
+    return 0;
+  }
 }
 
-// ===== EXOSKELETON DRAWING =====
+// ===== EXOSKELETON DRAWING (Cybernetic Neon Hologram) =====
 function drawExoskeleton(pts, c) {
+  // 1. Neon Gradient Energy Bones
   for (const [a, b] of HAND_CONNECTIONS) {
+    const pA = pts[a];
+    const pB = pts[b];
+
+    const boneGrad = ctx.createLinearGradient(pA.x, pA.y, pB.x, pB.y);
+    boneGrad.addColorStop(0, c.line);
+    boneGrad.addColorStop(0.5, c.glow);
+    boneGrad.addColorStop(1, c.line);
+
     ctx.beginPath();
-    ctx.moveTo(pts[a].x, pts[a].y);
-    ctx.lineTo(pts[b].x, pts[b].y);
-    ctx.strokeStyle = c.line;
+    ctx.moveTo(pA.x, pA.y);
+    ctx.lineTo(pB.x, pB.y);
+    ctx.strokeStyle = boneGrad;
     ctx.lineWidth = 2.5;
     ctx.lineCap = 'round';
     ctx.stroke();
   }
 
+  // 2. Cybernetic Energy Joint Nodes
   for (let i = 0; i < pts.length; i++) {
     const { x, y } = pts[i];
+
     if (i === INDEX_TIP) {
-      const g = ctx.createRadialGradient(x, y, 0, x, y, 16);
-      g.addColorStop(0, c.glow);
-      g.addColorStop(0.5, c.mid);
+      // Targeting Sight & Ray
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 22);
+      g.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      g.addColorStop(0.3, c.glow);
+      g.addColorStop(0.7, c.mid);
       g.addColorStop(1, 'rgba(0,0,0,0)');
+
       ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.fill();
+
+      // Outer HUD Reticle Ring
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.stroke();
+
       ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
     } else if (i === WRIST) {
-      ctx.fillStyle = c.wrist;
-      ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+      const g = ctx.createRadialGradient(x, y, 0, x, y, 14);
+      g.addColorStop(0, c.wrist);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
-    } else {
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
       ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
     }
   }
 }
@@ -518,27 +736,31 @@ function shatterAll() {
 
     const dx = f.x - cx, dy = f.y - cy;
     const baseAngle = Math.atan2(dy, dx);
-    const angle = baseAngle + (Math.random() - 0.5) * 1.2;
-    const force = 10 + Math.random() * 18;
+    const angle = baseAngle + (Math.random() - 0.5) * 1.4;
+    const force = 18 + Math.random() * 28;
 
     f.vx = Math.cos(angle) * force;
-    f.vy = Math.sin(angle) * force - 5;
-    f.rotSpeed = (Math.random() - 0.5) * 25;
+    f.vy = Math.sin(angle) * force - 8;
+    f.rotSpeed = (Math.random() - 0.5) * 40;
 
-    for (let i = 0; i < 2; i++) {
+    // Burst of sparkles per flower — golden + pink hues
+    for (let i = 0; i < 4; i++) {
+      const sparkAngle = angle + (Math.random() - 0.5) * 1.5;
+      const sparkForce = 5 + Math.random() * 12;
       sparkles.push({
-        x: f.x, y: f.y,
-        vx: Math.cos(angle + (Math.random() - 0.5)) * (4 + Math.random() * 8),
-        vy: Math.sin(angle + (Math.random() - 0.5)) * (4 + Math.random() * 8) - 3,
-        size: 1.5 + Math.random() * 3,
-        color: `hsl(${Math.random() * 60 + 300}, 80%, 75%)`,
+        x: f.x + (Math.random() - 0.5) * 10,
+        y: f.y + (Math.random() - 0.5) * 10,
+        vx: Math.cos(sparkAngle) * sparkForce,
+        vy: Math.sin(sparkAngle) * sparkForce - 4,
+        size: 1.5 + Math.random() * 3.5,
+        color: `hsl(${Math.random() < 0.5 ? (Math.random() * 50 + 30) : (Math.random() * 60 + 300)}, 85%, 72%)`,
         life: 1,
-        decay: 0.02 + Math.random() * 0.02
+        decay: 0.025 + Math.random() * 0.025
       });
     }
   }
 
-  setTimeout(() => { isScattering = false; }, 2000);
+  setTimeout(() => { isScattering = false; }, 1200);
 }
 
 // ===== RENDER SCENE =====
@@ -625,14 +847,14 @@ function renderScene(w, h) {
     const f = flowers[i];
 
     if (f.scattered) {
-      f.vx *= 0.97;
-      f.vy += 0.25;
-      f.vy *= 0.99;
+      f.vx *= 0.96;
+      f.vy += 0.35;
+      f.vy *= 0.98;
       f.x += f.vx;
       f.y += f.vy;
       f.rotation += f.rotSpeed;
-      f.opacity -= 0.006;
-      f.scale *= 0.998;
+      f.opacity -= 0.018;
+      f.scale *= 0.995;
 
       if (f.opacity <= 0 || f.y > h + 60 || f.x < -60 || f.x > w + 60) {
         flowers.splice(i, 1);
@@ -675,4 +897,340 @@ function renderScene(w, h) {
   if (sparkles.length > 400) sparkles.splice(0, sparkles.length - 400);
   if (stardust.length > 200) stardust.splice(0, stardust.length - 200);
   if (petals.length > 100) petals.splice(0, petals.length - 100);
+}
+
+// ======================================================================
+// INVISIBILITY CLOAK ENGINE — Robust Tracking System
+// ======================================================================
+
+/**
+ * Capture the current video frame as the "empty room" background snapshot.
+ * Stored on an offscreen canvas at the video's native resolution.
+ */
+function captureBackground() {
+  const vw = videoEl.videoWidth;
+  const vh = videoEl.videoHeight;
+  if (!vw || !vh) return;
+
+  if (!backgroundCanvas) {
+    backgroundCanvas = document.createElement('canvas');
+    backgroundCtx = backgroundCanvas.getContext('2d');
+  }
+  backgroundCanvas.width = vw;
+  backgroundCanvas.height = vh;
+
+  backgroundCtx.drawImage(videoEl, 0, 0, vw, vh);
+  hasBackground = true;
+}
+
+/**
+ * Adaptive EMA smoothing for landmark positions.
+ * High alpha (0.45) ensures zero lag, and large movement (> 35px) snaps
+ * immediately so tracking points never get stuck or frozen in place.
+ */
+const EMA_ALPHA = 0.45;
+
+function smoothLandmark(key, raw) {
+  if (!smoothBuffers[key]) {
+    smoothBuffers[key] = { x: raw.x, y: raw.y };
+    return { x: raw.x, y: raw.y };
+  }
+
+  const prev = smoothBuffers[key];
+  const dist = Math.hypot(raw.x - prev.x, raw.y - prev.y);
+
+  // If distance is large (> 35px), snap immediately without lagging/freezing
+  if (dist > 35) {
+    smoothBuffers[key] = { x: raw.x, y: raw.y };
+    return { x: raw.x, y: raw.y };
+  }
+
+  // Smooth small movements
+  const smoothed = {
+    x: EMA_ALPHA * raw.x + (1 - EMA_ALPHA) * prev.x,
+    y: EMA_ALPHA * raw.y + (1 - EMA_ALPHA) * prev.y
+  };
+  smoothBuffers[key] = smoothed;
+  return { x: smoothed.x, y: smoothed.y };
+}
+
+/**
+ * Given two hands' landmark arrays, determine left/right by wrist X position
+ * and return the smoothed 4-corner polygon with intelligent edge expansion.
+ */
+function getCloakPolygon(landmarks, sw, sh) {
+  if (!landmarks || landmarks.length < 2) return null;
+
+  const wrist0 = lmToScreen(landmarks[0][0], sw, sh);
+  const wrist1 = lmToScreen(landmarks[1][0], sw, sh);
+
+  let leftIdx, rightIdx;
+  if (wrist0.x < wrist1.x) {
+    leftIdx = 0;
+    rightIdx = 1;
+  } else {
+    leftIdx = 1;
+    rightIdx = 0;
+  }
+
+  // Store wrist positions for single-hand fallback later
+  lastTwoHandWrists = {
+    left: lmToScreen(landmarks[leftIdx][0], sw, sh),
+    right: lmToScreen(landmarks[rightIdx][0], sw, sh)
+  };
+
+  // Get raw corner landmarks (index tip = 8, thumb tip = 4)
+  const rawLeftIndex  = lmToScreen(landmarks[leftIdx][8], sw, sh);
+  const rawRightIndex = lmToScreen(landmarks[rightIdx][8], sw, sh);
+  const rawRightThumb = lmToScreen(landmarks[rightIdx][4], sw, sh);
+  const rawLeftThumb  = lmToScreen(landmarks[leftIdx][4], sw, sh);
+
+  // Smooth each corner with EMA
+  let p0 = smoothLandmark('left_index', rawLeftIndex);
+  let p1 = smoothLandmark('right_index', rawRightIndex);
+  let p2 = smoothLandmark('right_thumb', rawRightThumb);
+  let p3 = smoothLandmark('left_thumb', rawLeftThumb);
+
+  return [p0, p1, p2, p3];
+}
+
+/**
+ * Single-hand fallback: When only one hand is visible, try to keep the cloak
+ * alive by shifting the last valid polygon based on the visible hand's
+ * movement relative to its last known wrist position.
+ */
+function getShiftedPolygon(landmarks, sw, sh) {
+  if (!lastValidPolygon || !lastTwoHandWrists || !landmarks || landmarks.length < 1) {
+    return null;
+  }
+
+  const visibleWrist = lmToScreen(landmarks[0][0], sw, sh);
+
+  // Determine if the visible hand is closer to the last-known left or right wrist
+  const distToLeft = Math.hypot(visibleWrist.x - lastTwoHandWrists.left.x,
+                                visibleWrist.y - lastTwoHandWrists.left.y);
+  const distToRight = Math.hypot(visibleWrist.x - lastTwoHandWrists.right.x,
+                                 visibleWrist.y - lastTwoHandWrists.right.y);
+
+  const isLeftHand = distToLeft < distToRight;
+  const lastWrist = isLeftHand ? lastTwoHandWrists.left : lastTwoHandWrists.right;
+
+  // Calculate the delta movement of the visible hand
+  const dx = visibleWrist.x - lastWrist.x;
+  const dy = visibleWrist.y - lastWrist.y;
+
+  // Only shift if the movement is reasonable (< 200px), else it's likely a mistrack
+  if (Math.abs(dx) > 200 || Math.abs(dy) > 200) return null;
+
+  // Shift the entire polygon by half the delta (since only one hand moved)
+  return lastValidPolygon.map(pt => ({
+    x: pt.x + dx * 0.5,
+    y: pt.y + dy * 0.5
+  }));
+}
+
+/**
+ * Draw subtle hand outlines for cloak mode (dimmer than flower mode).
+ */
+function drawCloakHandOutlines(pts) {
+  const cloakLineColor = 'rgba(255, 255, 255, 0.15)';
+  const cloakDotColor = 'rgba(255, 255, 255, 0.2)';
+
+  for (const [a, b] of HAND_CONNECTIONS) {
+    ctx.beginPath();
+    ctx.moveTo(pts[a].x, pts[a].y);
+    ctx.lineTo(pts[b].x, pts[b].y);
+    ctx.strokeStyle = cloakLineColor;
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < pts.length; i++) {
+    ctx.fillStyle = (i === 8 || i === 4) ? 'rgba(255,255,255,0.5)' : cloakDotColor;
+    ctx.beginPath();
+    ctx.arc(pts[i].x, pts[i].y, (i === 8 || i === 4) ? 4 : 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/**
+ * Render the cloak effect at the given polygon with the given opacity.
+ * Separated from tracking logic so it can render cached/shifted polygons too.
+ */
+function renderCloakPolygon(polygon, w, h, opacity) {
+  if (!polygon || opacity <= 0.01) return;
+
+  const vw = videoEl.videoWidth || CAM_W;
+  const vh = videoEl.videoHeight || CAM_H;
+  const videoAspect = vw / vh;
+  const screenAspect = w / h;
+
+  let displayScale, offsetX, offsetY;
+  if (screenAspect > videoAspect) {
+    displayScale = w / vw;
+    offsetX = 0;
+    offsetY = (h - vh * displayScale) / 2;
+  } else {
+    displayScale = h / vh;
+    offsetX = (w - vw * displayScale) / 2;
+    offsetY = 0;
+  }
+
+  const drawW = vw * displayScale;
+  const drawH = vh * displayScale;
+
+  // 1. Clip to polygon and draw background snapshot
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  ctx.beginPath();
+  ctx.moveTo(polygon[0].x, polygon[0].y);
+  for (let i = 1; i < polygon.length; i++) {
+    ctx.lineTo(polygon[i].x, polygon[i].y);
+  }
+  ctx.closePath();
+  ctx.clip();
+
+  ctx.save();
+  ctx.translate(w, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(backgroundCanvas, 0, 0, vw, vh, offsetX, offsetY, drawW, drawH);
+  ctx.restore();
+
+  ctx.restore();
+
+  // 2. Futuristic Glowing Outline
+  ctx.save();
+  ctx.globalAlpha = opacity * 0.85;
+  ctx.beginPath();
+  ctx.moveTo(polygon[0].x, polygon[0].y);
+  for (let i = 1; i < polygon.length; i++) {
+    ctx.lineTo(polygon[i].x, polygon[i].y);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(120, 220, 255, 0.4)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = 'rgba(100, 210, 255, 0.6)';
+  ctx.shadowBlur = 16;
+  ctx.stroke();
+  ctx.restore();
+
+  // 3. Sci-Fi HUD Viewfinder Corner Brackets at 4 hand anchor points
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  drawCornerBracket(polygon[0].x, polygon[0].y, -1, -1); // Top-Left
+  drawCornerBracket(polygon[1].x, polygon[1].y,  1, -1); // Top-Right
+  drawCornerBracket(polygon[2].x, polygon[2].y,  1,  1); // Bottom-Right
+  drawCornerBracket(polygon[3].x, polygon[3].y, -1,  1); // Bottom-Left
+  ctx.restore();
+}
+
+/**
+ * Draw a futuristic Sci-Fi Viewfinder Corner Bracket `[ ]` at a polygon vertex.
+ */
+function drawCornerBracket(x, y, dirX, dirY) {
+  const len = 18;
+  ctx.save();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'square';
+  ctx.shadowColor = 'rgba(100, 210, 255, 0.8)';
+  ctx.shadowBlur = 10;
+
+  ctx.beginPath();
+  ctx.moveTo(x + dirX * len, y);
+  ctx.lineTo(x, y);
+  ctx.lineTo(x, y + dirY * len);
+  ctx.stroke();
+
+  // Center glowing anchor dot
+  ctx.fillStyle = 'rgba(100, 210, 255, 0.9)';
+  ctx.beginPath();
+  ctx.arc(x, y, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/**
+ * The cloak animation loop — robust tracking with persistence.
+ *
+ * Strategy:
+ * 1. If both hands tracked → compute fresh polygon, full opacity
+ * 2. If one hand tracked → shift the last polygon using visible hand's delta
+ * 3. If no hands → hold the last polygon, fade opacity over PERSIST_FRAMES
+ * 4. Animate cloakOpacity smoothly toward target (no snapping)
+ */
+function animLoopCloak(w, h) {
+  if (!hasBackground) {
+    instructionText.textContent = 'Capturing background... step out of frame!';
+    return;
+  }
+
+  const landmarks = currentLandmarks;
+  let polygon = null;
+
+  // --- Phase 1: Try to get a polygon from current tracking data ---
+
+  if (landmarks && landmarks.length >= 2) {
+    // BEST CASE: Both hands visible → compute fresh polygon
+    polygon = getCloakPolygon(landmarks, w, h);
+
+    if (polygon) {
+      lastValidPolygon = polygon;
+      framesSinceLastPolygon = 0;
+      targetCloakOpacity = 1;
+    }
+  } else if (landmarks && landmarks.length === 1 && lastValidPolygon) {
+    // FALLBACK: One hand visible → shift the cached polygon
+    polygon = getShiftedPolygon(landmarks, w, h);
+    framesSinceLastPolygon++;
+    targetCloakOpacity = framesSinceLastPolygon < PERSIST_FRAMES ? 0.85 : 0;
+  } else {
+    // NO HANDS: Hold the last polygon, start fading
+    framesSinceLastPolygon++;
+    targetCloakOpacity = framesSinceLastPolygon < PERSIST_FRAMES ? 0 : 0;
+  }
+
+  // Use cached polygon if we don't have a fresh one and we're within persistence window
+  if (!polygon && lastValidPolygon && framesSinceLastPolygon < PERSIST_FRAMES) {
+    polygon = lastValidPolygon;
+  }
+
+  // --- Phase 2: Smoothly animate opacity ---
+  // Fast fade-in (0.15), gradual fade-out (0.06) for a natural feel
+  if (targetCloakOpacity > cloakOpacity) {
+    cloakOpacity += (targetCloakOpacity - cloakOpacity) * 0.15;
+  } else {
+    cloakOpacity += (targetCloakOpacity - cloakOpacity) * 0.06;
+  }
+
+  // Clamp
+  if (cloakOpacity < 0.01) cloakOpacity = 0;
+  if (cloakOpacity > 1) cloakOpacity = 1;
+
+  // --- Phase 3: Draw hand skeletons (always, for visual feedback) ---
+  if (landmarks && landmarks.length > 0) {
+    for (let hi = 0; hi < landmarks.length; hi++) {
+      const pts = landmarks[hi].map(l => lmToScreen(l, w, h));
+      drawCloakHandOutlines(pts);
+    }
+  }
+
+  // --- Phase 4: Render the cloak ---
+  if (polygon && cloakOpacity > 0.01) {
+    renderCloakPolygon(polygon, w, h, cloakOpacity);
+  }
+
+  // --- Phase 5: Update instruction text ---
+  if (landmarks && landmarks.length >= 2 && cloakOpacity > 0.5) {
+    instructionText.textContent = 'Invisibility cloak active! 🫥✨';
+  } else if (landmarks && landmarks.length === 1) {
+    instructionText.textContent = 'Show BOTH hands to frame the cloak 🖐️🖐️';
+  } else if (cloakOpacity > 0.1) {
+    instructionText.textContent = 'Holding cloak... show your hands again';
+  } else {
+    instructionText.textContent = 'Show both hands to activate cloak 🫥';
+  }
 }
